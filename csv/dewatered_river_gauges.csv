@@ -1,0 +1,15 @@
+﻿stream_name,flow_ratio,gauge_name,gauge_no,start_date,end_date
+dolores,0.39,near_cisco,09180000,1950-12-01,2022-09-30
+dolores,,at_gateway,09179500,1936-10-01,1954-09-29
+dolores,,near_gateway,09179450,2014-11-18,2022-09-30
+duchesne,0.48,at_myton,09295000,1910-03-12,2022-09-30
+duchesne,0.46,near_randlett,09302000,1942-10-01,2022-09-30
+san_rafael,0.52,near_green_river,09328500,1909-10-01,2022-09-30
+san_juan,0.48,near_archuleta,09355500,1954-12-01,2022-09-30
+san_juan,,near_blanco,09356500,1930-10-01,1954-12-31
+san_juan,0.55,at_farmington,09365000,1930-10-01,2022-09-30
+la_plata,0.5,at_co_nm_line,09366500,1920-10-01,2022-09-30
+la_plata,0.19,near_farmington,09367500,1938-03-01,2022-09-30
+san_juan,0.47,at_shiprock,09368000,1934-10-01,2022-09-30
+mancos,0.5,near_tawaoc,09371000,1921-04-01,2022-09-30
+san_juan,0.51,near_bluff,09379500,1914-10-30,2022-09-30

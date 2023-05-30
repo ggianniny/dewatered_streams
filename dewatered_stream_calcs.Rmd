@@ -1,0 +1,665 @@
+---
+title: "Dewatered Stream Calculations"
+author: "Gordon Gianniny"
+date: "2023-03-23"
+output: html_document
+---
+
+Packages & Setup: 
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dataRetrieval)
+library(lubridate)
+library(RColorBrewer)
+```
+
+## Overview
+
+This script contains code to read in data for dewatered streams in the Upper Colorado River basin, calculate flow ratios, and produce comparison hydrographs. Dewatered streams were selected from Jack Schmidt's "JCS_Streamflow_Summary" Excel sheet as any gauge with a 21st century mean annual flow of less than 60% of the 1930-1949 mean annual flow. Steps are: 
+
+  1. Read in .csv file containing gauge #'s, names, and periods of record for all gauges that meet the "dewatered" criteria defined above. 
+  2. Use the dataRetriveal package to import discharge data for all of these gauges starting on Oct 1 1930 (or the beginning of the POR)
+  3. Calculate mean annual flow from 10/1/1930-9/31/1949 (or available period) and from 10/31/2000-09/31/2022 (or available period); calculate modern/historic percentage
+  4. Calculate mean daily flow for 10/1/1930-9/31/1949 (or available period) and from 10/31/2000-09/31/2022 (or available period); produce comparison hydrographs for the two periods. 
+  
+## 1. Read in .csv file containing gauge #'s, names, and periods of record for all gauges that meet the "dewatered" criteria defined above. 
+
+```{r}
+gauge_info <- read.csv("csv/dewatered_river_gauges.csv")%>%
+  mutate(gauge_no = paste(0, gauge_no, sep = ""), 
+         start_date = ymd(start_date), 
+         end_date = ymd(end_date))
+
+```
+
+
+## 2. Use the dataRetriveal package to import discharge data for all of these gauges starting on Oct 1 1930 (or the beginning of the POR)
+
+First, set up codes for dataRetrieval call:
+
+```{r}
+q.code <- "00060" #parameter code for discharge
+site.nos <- c(gauge_info$gauge_no) #create vector of gauge #'s
+start.date <- c(gauge_info$start_date) #desired start date
+end.date <- c(gauge_info$end_date) #desired end date
+gauge.names <- c(gauge_info$gauge_name)
+stream.names <- c(gauge_info$stream_name)
+site_list <- list() #empty list for loop
+```
+
+dataRetrieval call: Loop over all site numbers, start dates, and end dates: 
+
+```{r}
+for(i in 1:length(site.nos)){ 
+  site_list[[i]] <- readNWISdv(siteNumbers = site.nos[i], #site number for the "ith" site
+           parameterCd = q.code, #parameter code
+           startDate = start.date[i], #Start date for the "ith" site
+           endDate = end.date[i]) #end date for the "ith" site
+  site_list[[i]] <- site_list[[i]]%>%
+    mutate(gauge_name = rep(gauge.names[i], nrow(site_list[[i]])), #add column with gauge name to each dataframe in the list
+           stream_name = rep(stream.names[i], nrow(site_list[[i]]))
+           )%>%
+    select(2:4, 6:7)%>% #removing unnecessary cols
+    rename(q_cfs = 3)%>% #renaming 3rd column as "q_cfs"
+    mutate(q_afd = q_cfs*1.983) #calculating q in acre ft/day in a new column
+}
+```
+
+Check output:
+
+```{r}
+head(site_list[[1]])
+tail(site_list[[1]])
+```
+
+
+## 3. Calculate mean annual flow from 10/1/1930-9/30/1949 (or available period) and from 10/1/2000-09/30/2022 (or available period); calculate modern/historic percentage
+
+### **Reference: 10/1/1930-9/30/1949** 
+
+Data Setup: 
+
+```{r}
+ref.start <- ymd("1930-10-01") #start date of reference period
+ref.end <- ymd("1949-09-30") #end date of reference period
+
+ref.period <- function(df){
+  df <- df%>%
+    filter(Date <= ref.end & Date>=ref.start) #Subset observations occuring between 10/1/30 and 9/30/49
+}
+
+ref_list <- lapply(site_list, ref.period) #apply to site list to get all reference period Q's
+
+ref_rbind <- ref_list %>% 
+  bind_rows() #rowbind all sites into one dataframe for further calculations
+```
+
+Checking output:
+
+```{r}
+head(ref_rbind)
+tail(ref_rbind)
+
+max(ref_rbind$Date)
+min(ref_rbind$Date)
+```
+
+
+Calculate yearly discharge:
+
+```{r}
+ref_rbind_yearly <- ref_rbind %>%
+  mutate(year = year(Date))%>%
+  group_by(gauge_name, stream_name, year)%>%
+  summarise(yearly_q = sum(q_afd))
+```
+
+Calculate average annual runoff:
+
+```{r}
+ref_xbars <- ref_rbind_yearly%>%
+  group_by(gauge_name, stream_name)%>%
+  summarise(ref_afy = mean(yearly_q), 
+            )
+ref_xbars
+```
+
+Re-naming the blanco and archuleta gauges on the San Juan; Near and at gateway gauges on the Dolores: 
+
+```{r}
+ref_xbars <- ref_xbars %>%
+  mutate(gauge_name = if_else(gauge_name =="near_blanco", "blw_navajo", gauge_name) 
+         )%>%
+  mutate(gauge_name = if_else(gauge_name =="at_gateway", "gateway", gauge_name) 
+         )
+```
+
+
+### **Modern: 10/1/2000-09/30/2022**
+
+```{r}
+mod.start <- ymd("2000-10-01") #start date of modern period
+mod.end <- ymd("2022-09-30") #end date of modern period
+
+mod.period <- function(df){
+  df <- df%>%
+    filter(Date <= mod.end & Date>=mod.start) #Subset observations occuring between 10/1/2000 and 9/30/2022
+}
+
+mod_list <- lapply(site_list, mod.period) #apply to site list to get all modern period Q's
+
+mod_rbind <- mod_list %>% 
+  bind_rows() #rowbind all sites into one dataframe for further calculations
+```
+
+
+Checking output:
+
+```{r}
+head(mod_rbind)
+tail(mod_rbind)
+
+max(mod_rbind$Date)
+min(mod_rbind$Date)
+```
+
+
+Calculate yearly discharge:
+
+```{r}
+mod_rbind_yearly <- mod_rbind %>%
+  mutate(year = year(Date))%>%
+  group_by(gauge_name, stream_name, year)%>%
+  summarise(yearly_q = sum(q_afd))
+```
+
+Calculate average annual runoff:
+
+```{r}
+mod_xbars <- mod_rbind_yearly%>%
+  group_by(gauge_name, stream_name)%>%
+  summarise(mod_afy = mean(yearly_q), 
+            )
+mod_xbars
+```
+
+Re-naming the blanco and archuleta gauges on the San Juan; Near and at gateway gauges on the Dolores: 
+
+```{r}
+mod_xbars <- mod_xbars %>%
+  mutate(gauge_name = if_else(gauge_name =="near_archuleta", "blw_navajo", gauge_name) 
+         )%>%
+  mutate(gauge_name = if_else(gauge_name =="near_gateway", "gateway", gauge_name) 
+         )
+```
+
+### Combine and calculate flow reductions:
+
+Combine datasets:
+
+```{r}
+ref_mod <- merge(ref_xbars, mod_xbars, all = T)
+ref_mod
+```
+
+Calculate flow differences: 
+
+```{r}
+ref_mod <- ref_mod %>%
+  mutate(flow_prop = mod_afy/ref_afy) 
+ref_mod
+
+mean_flowprops <- ref_mod %>%
+  group_by(stream_name)%>%
+  summarise(fp_xbar = mean(flow_prop, na.rm = T))%>%
+  mutate(flow_decline = 1-fp_xbar)
+mean_flowprops
+```
+
+Quick visualization of changes between reference and modern at each site: 
+
+```{r}
+flowprop_pivot <- ref_mod %>%
+  select(gauge_name, stream_name, ref_afy, mod_afy)%>%
+  pivot_longer(!c(gauge_name, stream_name), names_to ="period", values_to = "flow_afd")%>%
+  mutate(full_name = paste(stream_name, gauge_name, sep = "_"))
+
+flow.comp <- ggplot(filter(flowprop_pivot, !gauge_name == "near_cisco", !gauge_name == "near_farmington"), aes(x = full_name, y = flow_afd, fill = period))+
+  geom_bar(stat = "identity", position = "dodge")+
+  theme_classic()+
+  labs(x = "Gauge Name", y = "Mean annual flow, AF", fill = "Time Period")+
+  scale_fill_manual(values = c("#1B9E77","#D95F02"), labels = c("2000-2021", "1930-1949"))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+flow.comp
+```
+
+
+Quick visualization of flow reductions by gauge: 
+
+```{r}
+flow.red <- ggplot(filter(ref_mod, !gauge_name == "near_cisco", !gauge_name == "near_farmington"), aes(x = gauge_name, y = flow_prop, fill = flow_prop))+
+  geom_bar(stat = "identity", position = "dodge")+
+  theme_classic()+
+  scale_y_continuous(limits = c(0, 1))+
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 45, vjust = 0.5))+
+  labs(x = "Gauge Name", y = "2000-2022 mean flow/1930-1949 mean flow")
+flow.red
+```
+
+## 4. Calculate mean daily flow for 10/1/1930-9/31/1949 (or available period) and from 10/31/2000-09/31/2022 (or available period); produce comparison hydrographs for the two periods. 
+
+**Reference Period:**
+
+```{r}
+ref_daily <- ref_rbind %>%
+  mutate(doy = yday(Date))%>%
+  group_by(gauge_name, doy, stream_name)%>%
+  summarise(ref_mean_cfs = mean(q_cfs), 
+            ref_mean_afd = mean(q_afd), 
+            ref_max = quantile(q_afd, 0.75, na.rm = T), 
+            ref_min = quantile(q_afd, 0.25, na.rm = T))
+```
+
+Re-naming the blanco and archuleta gauges on the San Juan; Near and at gateway gauges on the Dolores: 
+
+```{r}
+ref_daily <- ref_daily %>%
+  mutate(gauge_name = if_else(gauge_name =="near_blanco", "blw_navajo", gauge_name) 
+         )%>%
+  mutate(gauge_name = if_else(gauge_name =="at_gateway", "gateway", gauge_name) 
+         )
+```
+
+**Modern Period:**
+
+```{r}
+mod_daily <- mod_rbind %>%
+  mutate(doy = yday(Date))%>%
+  group_by(gauge_name, doy, stream_name)%>%
+  summarise(mod_mean_cfs = mean(q_cfs), 
+            mod_mean_afd = mean(q_afd), 
+            mod_max = quantile(q_afd, 0.75, na.rm = T), 
+            mod_min = quantile(q_afd, 0.25, na.rm = T))
+```
+
+Re-naming the blanco and archuleta gauges on the San Juan; Near and at gateway gauges on the Dolores: 
+
+```{r}
+mod_daily <- mod_daily %>%
+  mutate(gauge_name = if_else(gauge_name =="near_archuleta", "blw_navajo", gauge_name) 
+         )%>%
+  mutate(gauge_name = if_else(gauge_name =="near_gateway", "gateway", gauge_name) 
+         )
+```
+
+
+**Merge:**
+
+```{r}
+daily_comb <- merge(ref_daily, mod_daily, all = T)%>% #combine, keep all obs in both 
+  mutate(flow_diff = ref_mean_afd-mod_mean_afd)#calculate difference between modern and historical mean for each day
+head(daily_comb) #Check output
+```
+
+**Plotting:** 
+
+Data setup:
+
+```{r}
+daily_pivot <- daily_comb %>%
+  mutate(full_name = paste(stream_name, gauge_name, sep = "_"))%>%
+  select(-ref_mean_cfs, -mod_mean_cfs, -gauge_name, - stream_name)%>%
+  pivot_longer(!c(full_name, doy, flow_diff, ref_max, ref_min, mod_max, mod_min), names_to = "period", values_to = "mean_afd")
+```
+
+Plotting: 
+
+```{r}
+hgraph.comparisons <- ggplot(filter(daily_pivot, !full_name == "dolores_near_cisco"), aes(x = doy, y = mean_afd))+
+  geom_ribbon(aes(ymin = ref_min, ymax = ref_max, fill = "1930-1949"), alpha = 0.25)+
+  geom_ribbon(aes(ymin = mod_min, ymax = mod_max, fill = "2000-2021"), alpha = 0.25)+
+  geom_line(aes(x = doy, y = mean_afd, color = period))+
+  theme_classic()+
+  facet_wrap(~full_name, scales = "free")+
+  labs(x = "Day of Year", y = "Mean dischrge, af/d", color = "Time Period", fill = "Time Period")+
+  scale_color_manual(values = c("#D95F02" ,"#7570B3"), labels = c("2000-2021", "1930-1949"), name = "Time Period")+
+  scale_fill_manual(values = c("1930-1949" = "#7570B3", "2000-2021" = "#D95F02"), name = "Time Period")+
+  theme(legend.position = "bottom")
+hgraph.comparisons
+```
+
+Save: 
+
+```{r}
+ggsave("plots/hgraph_comparisons.pdf", plot = hgraph.comparisons, device = "pdf", width = 9, height =6.5, units = "in", dpi = "retina")
+```
+
+Subset for graphic plotting: 
+
+
+```{r}
+plot_sites <- daily_pivot %>%
+  filter(full_name == "dolores_gateway"|full_name ==  "duchesne_at_myton"| full_name == "la_plata_at_co_nm_line"| full_name == "mancos_near_tawaoc"|full_name == "san_juan_blw_navajo"| full_name== "san_rafael_near_green_river")
+
+```
+
+Plotting: 
+
+```{r}
+subset.comparisons <- ggplot(plot_sites, aes(x = doy, y = mean_afd))+
+  geom_ribbon(aes(ymin = ref_min, ymax = ref_max, fill = "1930-1949"), alpha = 0.25)+
+  geom_ribbon(aes(ymin = mod_min, ymax = mod_max, fill = "2000-2021"), alpha = 0.25)+
+  geom_line(aes(x = doy, y = mean_afd, color = period))+
+  theme_classic()+
+  facet_wrap(~full_name, scales = "free")+
+  labs(x = "Day of Year", y = "Mean dischrge, af/d", color = "Time Period", fill = "Time Period")+
+  scale_color_manual(values = c("#D95F02" ,"#7570B3"), labels = c("2000-2021", "1930-1949"), name = "Time Period")+
+  scale_fill_manual(values = c("1930-1949" = "#7570B3", "2000-2021" = "#D95F02"), name = "Time Period")+
+  theme(legend.position = "bottom")
+subset.comparisons
+```
+
+Save:
+
+```{r}
+ggsave("plots/subset_comparisons.pdf", plot = subset.comparisons, device = "pdf", width = 9, height =6.5, units = "in", dpi = "retina")
+```
+
+Dolores Only: f05d22 orange 00c4a3 Teal
+
+```{r}
+dolo.comp <- ggplot(filter(plot_sites, full_name == "dolores_gateway"), aes(x = doy, y = mean_afd))+
+  geom_ribbon(aes(ymin = ref_min, ymax = ref_max, fill = "1930-1949"), alpha = 0.25)+
+  geom_ribbon(aes(ymin = mod_min, ymax = mod_max, fill = "2000-2021"), alpha = 0.25)+
+  geom_line(aes(x = doy, y = mean_afd, color = period), size = 2)+
+  theme_classic()+
+  #facet_wrap(~full_name, scales = "free")+
+  labs(x = "Day of Year", y = "Mean dischrge, af/d", color = "Time Period", fill = "Time Period")+
+  scale_color_manual(values = c("#DBAB92" ,"#88D7D8"), labels = c("2000-2021", "1930-1949"), name = "Time Period")+
+  scale_fill_manual(values = c("1930-1949" = "#88D7D8", "2000-2021" = "#DBAB92"), name = "Time Period")+
+  theme(legend.position = "bottom", 
+        axis.text = element_text(size = 10, color = "White"), 
+        axis.title = element_text(size = 11, face = "bold", color = "White"), 
+        strip.text = element_text(size = 11, face = "bold", color = "White"), 
+        legend.text = element_text (size = 10, color = "White"), 
+        legend.title = element_text(size = 11, color = "White"), 
+        axis.line = element_line(color = "White"), 
+        axis.ticks = element_line(color = "White"))
+dolo.comp
+```
+
+Save:
+
+```{r}
+ggsave("plots/dolo_comparison.pdf", plot = dolo.comp, device = "pdf", width = 6.5, height = 3, units = "in", dpi = "retina")
+```
+
+
+Plots for different management scenarios: 
+
+```{r}
+mgmt_scenarios <- plot_sites%>%
+  select(doy, full_name, period, mean_afd)%>%
+  filter(full_name == "dolores_gateway"&period == "mod_mean_afd"|full_name == "duchesne_at_myton"&period=="mod_mean_afd"| 
+                full_name == "dolores_gateway"&period == "ref_mean_afd")%>%
+  mutate(full_name = ifelse(full_name == "duchesne_at_myton", "at_myton_duch", full_name))%>%
+  mutate(site_per = paste(full_name, period, sep = "_"))
+```
+
+
+```{r}
+mgmt_sc2 <- plot_sites %>%
+  select(doy, full_name, period, mean_afd)%>%
+  filter(full_name == "dolores_gateway"&period == "ref_mean_afd")%>%
+  mutate(b_half_rest = 0.5*mean_afd, 
+         a_quart_rest = 0.25*mean_afd)%>%
+  rename(c_full_rest = mean_afd)%>%
+  pivot_longer(!c(doy, full_name, period), names_to = "scenario", values_to = "afd")
+
+```
+
+
+```{r}
+mgmt.comp <- ggplot(mgmt_sc2, aes(x = doy, y = afd))+
+  geom_line(aes(x = doy, y = afd, color = scenario), size = 2)+
+  theme_classic()+
+  facet_wrap(~scenario, nrow = 3, ncol = 1)+
+  labs(x = "Day of Year", y = "Mean dischrge, af/d", color = "Time Period", fill = "Time Period")+
+  scale_color_manual(values = c("#DBAB92" ,"#FFFFFFFF", "#88D7D8"), labels = c("2000-2021", "1930-1949"), name = "Time Period")+
+  theme(legend.position = "none", 
+        strip.background = element_blank(), 
+        strip.text = element_blank(), 
+        axis.text = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.title = element_blank(), 
+        axis.line = element_line(color = "White")
+        )
+mgmt.comp
+```
+Save:
+
+```{r}
+ggsave("plots/mgmt_comp.pdf", plot = mgmt.comp, device = "pdf", width = 2.5, height = 11, units = "in", dpi = "retina")
+```
+
+---
+---
+
+
+Alternative layout for all sites: 
+
+```{r}
+subset.column <- ggplot(plot_sites, aes(x = doy, y = mean_afd))+
+  geom_ribbon(aes(ymin = ref_min, ymax = ref_max, fill = "1930-1949"), alpha = 0.25)+
+  geom_ribbon(aes(ymin = mod_min, ymax = mod_max, fill = "2000-2021"), alpha = 0.25)+
+  geom_line(aes(x = doy, y = mean_afd, color = period), size = 0.75)+
+  theme_classic()+
+  labs(x = "Day of Year", y = "Mean dischrge, af/d", color = "Time Period", fill = "Time Period")+
+  scale_color_manual(values = c("#D95F02" ,"#7570B3"), labels = c("2000-2021", "1930-1949"), name = "Time Period")+
+  scale_fill_manual(values = c("1930-1949" = "#7570B3", "2000-2021" = "#D95F02"), name = "Time Period")+
+  facet_wrap(~full_name, scales = "free_y", nrow = 6, ncol = 1)+
+  theme(legend.position = "none", 
+        axis.text = element_text(size = 11), 
+        axis.title = element_blank(), 
+        strip.text = element_blank(),
+        panel.spacing = unit(1.5, "lines")
+        )
+subset.column
+
+```
+
+Save:
+
+```{r}
+ggsave("plots/subset_column.pdf", plot = subset.column, device = "pdf", width = 2, height =9, units = "in", dpi = "retina")
+```
+
+## 5. Graphs comparing measured and estimated natural flows
+
+Goal: produce plots showing measured mean annual flow and estimated natural flow (from USBR) for each year since 1930. Will need: 
+
+  a. Annual average flow (in Acre Ft.) for gauges w/natural flows for each year since 1930 (or beginning of POR):
+    - Dolores @ Cisco, San Rafael @ Green River, Duchesne @ Randlett, San Juan @ Archuleta, San Juan @ Bluff
+  b. Estimated natural flow (in AF/Y) for each gauge from USBR (https://www.usbr.gov/lc/region/g4000/NaturalFlow/current.html)
+  
+### A. Calcuate annual average flow (AF/Y) for gauges w/ natural flows: 
+
+Pull data out of site_list for desired gauges: 
+
+```{r}
+measured_rbind <- site_list %>%
+  bind_rows()%>% #combine site_list into one data frame
+  mutate(full_name = paste(stream_name, gauge_name, sep = "_"))%>% #add a full name col with both stream and gauge name
+  select(Date, full_name, q_afd)%>% #select desired cols
+  filter(full_name == "dolores_near_cisco"|full_name == "duchesne_near_randlett"|full_name == "san_juan_near_archuleta"|full_name == "san_juan_near_bluff"|full_name == "san_rafael_near_green_river")%>% #filter to get desired sites
+  mutate(yr = year(Date))
+```
+
+Calculate annual flow (af): 
+
+```{r}
+measured_annual <- measured_rbind %>%
+  group_by(full_name, yr)%>%
+  summarise(afy_measured = sum(q_afd))
+```
+
+### B. Read in estimated natural flows; re-format and merge with measured data: 
+
+Read in natural flow data & re-format:
+
+```{r}
+natflows <- read.csv("csv/annual_natflow_export.csv")%>%
+  pivot_longer(!yr, names_to = "full_name", values_to = "afy_natural")%>%
+  arrange(full_name, yr)
+```
+
+Merge with measured data: 
+
+```{r}
+measured_natural <- merge(measured_annual, natflows, all = F)%>%
+  pivot_longer(!c(full_name, yr), names_to = "type", values_to = "q_afy")%>%
+  mutate(y.min = ifelse(type == "afy_natural", lag(q_afy), q_afy), 
+         y.max = ifelse(type == "afy_measured", lead(q_afy), q_afy))%>%
+  filter(yr >=1950)
+  
+```
+
+### C. Comparative plot for each stream: 
+
+```{r}
+meas.nat.comp <- ggplot(measured_natural, aes(x = yr, y = q_afy, color = type))+
+  geom_ribbon(aes(ymin =y.min, ymax = y.max, fill = "diff"), alpha = 0.25)+
+   geom_line(size = 0.75)+
+  theme_classic()+
+  facet_wrap(~full_name, scales = "free_y", nrow = 5, ncol = 1)+
+  labs(x = "Year", y = "Discharge, AF/Y", color = "Legend", fill = "")+
+  scale_color_manual(labels = c("Measured Flow", "USBR Est. Natural Flow"), values = c( "#D95F02","#7570B3"))+
+  scale_fill_manual(labels = "Est. Natural - Measured", values = "Grey")+
+  theme(legend.position = "bottom", 
+        axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 11))
+meas.nat.comp
+```
+
+Save this plot: 
+
+```{r}
+ggsave("plots/meas_nat_comp.pdf", meas.nat.comp, device = "pdf", width = 6.5, height = 9, units = "in", dpi = "retina")
+```
+
+Plot of consumptive uses over time - First, calculate consumptive uses:  
+
+```{r}
+consumptive_uses <- measured_natural%>%
+  pivot_wider(id_cols = c(full_name, yr, y.max, y.min), names_from = type, values_from = q_afy)%>%
+  mutate(consumptive_use = afy_natural-afy_measured)%>%
+  mutate(use_rank = case_when(
+    full_name == "san_juan_near_bluff" ~ "A", full_name == "duchesne_near_randlett" ~ "B", full_name == "san_juan_near_archuleta" ~ "C", full_name == "dolores_near_cisco"~"D", full_name == "san_rafael_near_green_river" ~ "E"
+  ))
+
+consumptive_uses%>%
+  group_by(full_name, use_rank)%>%
+  summarise(cu_x = mean(consumptive_use))%>%
+  arrange(cu_x)
+```
+
+Next, plot consumptive use over time for each gauge: 
+
+```{r}
+cu.plot <- ggplot(filter(consumptive_uses, consumptive_use > 0), aes(x = yr))+
+  geom_ribbon(aes(x = yr, ymax = consumptive_use, ymin = 0, fill = use_rank), alpha = 0.5)+
+  theme_classic()+
+  #facet_wrap(~full_name, nrow = 5, ncol = 1, scales = "free_y")+
+  labs(y = "Consumptive Use, AF/Y", x = "Year", fill = "Gauge")+
+  theme(legend.position = "bottom", 
+        axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 11, face = "bold"), 
+        legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 11))+
+  scale_fill_manual(values = brewer.pal(5, "Set1"), labels = c("SJ nr. Bluff", "Duc nr. Randlett", "SJ nr. Archuleta", "Dolo nr. Cisco", "SR nr. GR, UT"))
+cu.plot
+```
+
+```{r}
+ggsave("plots/cu_plot.pdf", cu.plot, device = "pdf", width = 6.5, height = 4, units = "in", dpi = "retina")
+```
+
+
+
+
+```{r}
+ggplot(filter(consumptive_uses, consumptive_use > 0), aes(x = yr, y = consumptive_use, color = full_name))+
+  geom_line()+
+  geom_smooth( se = F, linetype = "dashed", size = 0.5)+
+  theme_classic()+
+  facet_wrap(~full_name, nrow = 5, ncol = 1, scales = "free_y")+
+  labs(y = "Consumptive Use, AF/Y", x = "Year", color = "Gauge Name")+
+  theme(legend.position = "none")+
+  scale_color_manual(values = brewer.pal(5, "Set1"))
+```
+
+Plotting consumptive uses as % of estimated natural flows: 
+
+Calculations: 
+
+```{r}
+cu_perc <- consumptive_uses%>%
+  filter(consumptive_use >= 0)%>%
+  mutate(cu_percent = consumptive_use/afy_natural)
+```
+
+Plotting: 
+
+```{r}
+cu.perc <- ggplot(cu_perc, aes(x = yr))+
+  geom_ribbon(aes(x = yr, ymax = cu_percent, ymin = 0, fill = use_rank), alpha = 0.5)+
+  geom_smooth(aes(x = yr, y = cu_percent, funy = "mean"), se = F, color = "Black", linetype = "dashed")+
+  theme_classic()+
+  #acet_wrap(~full_name, nrow = 5, ncol = 1, scales = "free_y")+
+  labs(y = "% of est. natural flow consumed", x = "Year", fill = "Gauge")+
+  theme(legend.position = "bottom", 
+        axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 11, face = "bold"), 
+        legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 11))+
+  scale_fill_manual(values = brewer.pal(5, "Set1"), labels = c("SJ nr. Bluff", "Duc nr. Randlett", "SJ nr. Archuleta", "Dolo nr. Cisco", "SR nr. GR, UT"))
+cu.perc
+```
+
+Alt Layout: 
+
+```{r}
+cu_plot_dat <- cu_perc %>%
+  filter(!full_name == "san_juan_near_archuleta")%>%
+  mutate(full_name = ifelse(full_name == "san_juan_near_bluff", "zsan_juan_near_bluff", full_name))
+```
+
+```{r}
+cu.pal <-c("#FEB24C" ,"#FD8D3C" ,"#F03B20" ,"#BD0026")
+cu.alt <- rep("#C3927B", 4)
+cu.stack <- ggplot(cu_plot_dat, aes(x = yr))+
+  geom_ribbon(aes(x = yr, ymax = cu_percent, ymin = 0, fill = full_name), alpha = 0.5)+
+  geom_smooth(aes(x = yr, y = cu_percent, color = full_name), se = F, linetype = "dashed")+
+  theme_classic()+
+  facet_wrap(~full_name, nrow = 4, ncol = 1, scales = "free_y")+
+  labs(y = "% of est. natural flow consumed", x = "Year", fill = "Gauge")+
+  theme(legend.position = "none", 
+        axis.text = element_text(size = 10, color = "White"), 
+        axis.title = element_text(size = 11, face = "bold", color = "White"), 
+        legend.text = element_text(size = 10, color = "White"), 
+        legend.title = element_text(size = 11, color = "White"), 
+        strip.text = element_text(size = 11, face = "bold", color = "White"), 
+        strip.background = element_rect(color = "White"), 
+        axis.line = element_line(color = "White"), 
+        axis.ticks = element_line(color = "White"))+
+  scale_fill_manual(values = cu.alt, labels = c("SJ nr. Bluff", "Duc nr. Randlett", "SJ nr. Archuleta", "Dolo nr. Cisco", "SR nr. GR, UT"))+
+  scale_color_manual(values = cu.alt)
+cu.stack
+```
+
+```{r}
+ggsave("plots/cu_stack.pdf", cu.stack, device = "pdf", width = 6.5, height = 5, units = "in", dpi = "retina")
+```
